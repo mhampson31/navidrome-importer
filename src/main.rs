@@ -1,5 +1,8 @@
-use clap::{Parser};
-use sqlx::{SqliteConnection, Connection};
+use clap::Parser;
+use config::Config;
+use serde::Deserialize;
+use sqlx::{Connection, SqliteConnection};
+use std::env;
 
 #[derive(Debug, sqlx::FromRow)]
 struct Track {
@@ -7,16 +10,14 @@ struct Track {
     album: String,
     track: String,
     track_nbr: i8,
-    rating: f32
+    rating: f32,
 }
-
 
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
     #[arg(short, long)]
-    source: String,
-    navidrome_path: String,
+    config: Option<String>,
 }
 
 #[derive(Debug)]
@@ -24,10 +25,10 @@ enum Source {
     Plex,
 }
 
-
 fn get_source_query(source: &Source) -> &str {
     match source {
-        Source::Plex =>  r#"
+        Source::Plex => {
+            r#"
             select artist.title as artist,
                album.title as album,
                track.title as track,
@@ -65,24 +66,33 @@ fn get_source_query(source: &Source) -> &str {
   
             order by artist.title, album.title, track."index";
         "#
+        }
     }
 }
 
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let mut home = env::home_dir().unwrap();
+    home.push(".navidrome-importer");
+    home.push("settings.toml");
 
-    println!("Getting ratings from {:?}", cli.source);
+    let settings = Config::builder()
+        .add_source(config::File::with_name(home.to_str().unwrap()))
+        .build()
+        .unwrap();
 
-    let mut conn = SqliteConnection::connect(&cli.source).await?;
+    let source = settings.get::<String>("source").unwrap();
+
+    println!("Getting ratings from {:?}", &source);
+
+    let mut conn = SqliteConnection::connect(&source).await?;
 
     let source = get_source_query(&Source::Plex);
 
     let ratings: Vec<Track> = sqlx::query_as(&source).fetch_all(&mut conn).await?;
     println!("{:#?}", ratings.len());
 
-
+    conn.close().await?;
 
     Ok(())
 }
