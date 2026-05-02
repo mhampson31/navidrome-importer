@@ -1,11 +1,13 @@
 use clap::{Parser};
 use sqlx::{SqliteConnection, Connection};
 
+#[derive(Debug, sqlx::FromRow)]
 struct Track {
     artist: String,
     album: String,
-    number: i8,
-    rating: i8
+    track: String,
+    track_nbr: i8,
+    rating: f32
 }
 
 
@@ -29,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     select artist.title as artist,
        album.title as album,
        track.title as track,
-       track.index as track_nbr,
+       track.'index' as track_nbr,
        track_data.rating as rating
     
     from metadata_items artist
@@ -46,11 +48,11 @@ async fn main() -> anyhow::Result<()> {
     where album.library_section_id = 3
       and track_data.rating is not null
       
-    order by artist.title, album.title, track.index;
+    order by artist.title, album.title, track.'index';
     "#;
 
-    let count = sqlx::query_as::<_, (i64,)>("select count(*) from media_items;").fetch_all(&mut conn).await?;
-    println!("{:#?}", count);
+    let ratings: Vec<Track> = sqlx::query_as(&plex_query).fetch_all(&mut conn).await?;
+    println!("{:#?}", ratings.len());
 
 
     if let Some(navidrome_path) = cli.navidrome_path.as_deref() {
