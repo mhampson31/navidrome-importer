@@ -15,8 +15,8 @@ struct Track {
 #[command(version, about)]
 struct Cli {
     #[arg(short, long)]
-    source_path: String,
-    navidrome_path: Option<String>,
+    source: String,
+    navidrome_path: String,
 }
 
 #[derive(Debug)]
@@ -28,27 +28,42 @@ enum Source {
 fn get_source_query(source: &Source) -> &str {
     match source {
         Source::Plex =>  r#"
-        select artist.title as artist,
-           album.title as album,
-           track.title as track,
-           track.'index' as track_nbr,
-           track_data.rating as rating
-    
-        from metadata_items artist
-    
-        join metadata_items album
-          on artist.id = album.parent_id
-    
-        join metadata_items track
-          on album.id = track.parent_id
-      
-        join metadata_item_settings track_data
-          on track_data.guid = track.guid
+            select artist.title as artist,
+               album.title as album,
+               track.title as track,
+               track."index" as track_nbr,
+               s.rating as rating,
+               part.file
+   
+            from metadata_items artist
 
-        where album.library_section_id = 3
-          and track_data.rating is not null
-      
-        order by artist.title, album.title, track.'index';
+            join metadata_items album
+              on artist.id = album.parent_id
+  
+            join metadata_items track
+              on album.id = track.parent_id
+  
+            join metadata_item_settings s
+              on s.guid = track.guid
+
+             /* We don't need anything from media_items. 
+                It just lets us link metadata_items to media_parts 
+              */
+            join media_items media
+              on track.id = media.metadata_item_id
+  
+            join media_parts part
+              on part.media_item_id = media.id
+  
+            where track.library_section_id in (
+                select sl.library_section_id 
+                from section_locations sl 
+                /* this should be parameterized */
+                where sl.root_path in ("/music")
+            )
+              and s.rating is not null
+  
+            order by artist.title, album.title, track."index";
         "#
     }
 }
@@ -58,9 +73,9 @@ fn get_source_query(source: &Source) -> &str {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    println!("Getting ratings from {:?}", cli.source_path);
+    println!("Getting ratings from {:?}", cli.source);
 
-    let mut conn = SqliteConnection::connect(&cli.source_path).await?;
+    let mut conn = SqliteConnection::connect(&cli.source).await?;
 
     let source = get_source_query(&Source::Plex);
 
@@ -68,9 +83,6 @@ async fn main() -> anyhow::Result<()> {
     println!("{:#?}", ratings.len());
 
 
-    if let Some(navidrome_path) = cli.navidrome_path.as_deref() {
-        println!("Navidrome db: {navidrome_path}");
-    }
 
     Ok(())
 }
