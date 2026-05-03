@@ -35,35 +35,35 @@ fn get_source_query(source: &Source) -> &str {
                track."index" as track_nbr,
                s.rating as rating,
                part.file
-   
+
             from metadata_items artist
 
             join metadata_items album
               on artist.id = album.parent_id
-  
+
             join metadata_items track
               on album.id = track.parent_id
-  
+
             join metadata_item_settings s
               on s.guid = track.guid
 
-             /* We don't need anything from media_items. 
-                It just lets us link metadata_items to media_parts 
+             /* We don't need anything from media_items.
+                It just lets us link metadata_items to media_parts
               */
             join media_items media
               on track.id = media.metadata_item_id
-  
+
             join media_parts part
               on part.media_item_id = media.id
-  
+
             where track.library_section_id in (
-                select sl.library_section_id 
-                from section_locations sl 
+                select sl.library_section_id
+                from section_locations sl
                 /* this should be parameterized */
                 where sl.root_path in ("/music")
             )
               and s.rating is not null
-  
+
             order by artist.title, album.title, track."index";
         "#
         }
