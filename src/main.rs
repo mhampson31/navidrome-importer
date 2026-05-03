@@ -60,7 +60,7 @@ fn get_source_query(source: &Source) -> &str {
                 select sl.library_section_id
                 from section_locations sl
                 /* this should be parameterized */
-                where sl.root_path in ("/music")
+                where sl.root_path = $1
             )
               and s.rating is not null
 
@@ -82,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap();
 
     let source = settings.get::<String>("source").unwrap();
+    let library = settings.get::<String>("library").unwrap();
 
     println!("Getting ratings from {:?}", &source);
 
@@ -89,7 +90,10 @@ async fn main() -> anyhow::Result<()> {
 
     let source = get_source_query(&Source::Plex);
 
-    let ratings: Vec<Track> = sqlx::query_as(&source).fetch_all(&mut conn).await?;
+    let ratings: Vec<Track> = sqlx::query_as(source)
+        .bind(&library)
+        .fetch_all(&mut conn)
+        .await?;
     println!("{:#?}", ratings.len());
 
     conn.close().await?;
