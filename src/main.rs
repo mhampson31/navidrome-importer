@@ -6,6 +6,7 @@ use std::env;
 
 #[derive(Debug, sqlx::FromRow)]
 struct Track {
+    source: Source,
     artist: String,
     album: String,
     track: String,
@@ -20,20 +21,22 @@ struct Cli {
     config: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, sqlx::Type)]
 enum Source {
-    Plex,
+    Navidrome = 1,
+    Plex = 2,
 }
 
 fn get_source_query(source: &Source) -> &str {
     match source {
         Source::Plex => {
             r#"
-            select artist.title as artist,
+            select $1 as source,
+               artist.title as artist,
                album.title as album,
                track.title as track,
                track."index" as track_nbr,
-               s.rating as rating,
+               settings.rating as rating,
                part.file
 
             from metadata_items artist
@@ -44,8 +47,8 @@ fn get_source_query(source: &Source) -> &str {
             join metadata_items track
               on album.id = track.parent_id
 
-            join metadata_item_settings s
-              on s.guid = track.guid
+            join metadata_item_settings settings
+              on settings.guid = track.guid
 
              /* We don't need anything from media_items.
                 It just lets us link metadata_items to media_parts
@@ -59,14 +62,14 @@ fn get_source_query(source: &Source) -> &str {
             where track.library_section_id in (
                 select sl.library_section_id
                 from section_locations sl
-                /* this should be parameterized */
-                where sl.root_path = $1
+                where sl.root_path = $2
             )
-              and s.rating is not null
+              and settings.rating is not null
 
             order by artist.title, album.title, track."index";
         "#
         }
+        Source::Navidrome => r#""#,
     }
 }
 
@@ -91,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
     let source = get_source_query(&Source::Plex);
 
     let ratings: Vec<Track> = sqlx::query_as(source)
+        .bind(Source::Plex)
         .bind(&library)
         .fetch_all(&mut conn)
         .await?;
