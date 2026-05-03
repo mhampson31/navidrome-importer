@@ -108,9 +108,8 @@ fn get_source_query(source: &Source) -> &str {
                album.title as album,
                track.title as track,
                track."index" as track_nbr,
+               part.file
                settings.rating as rating,
-               part.file as path,
-               null as navidrome_rating
 
             from metadata_items artist
 
