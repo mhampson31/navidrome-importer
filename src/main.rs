@@ -4,7 +4,13 @@ use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
 use std::env;
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, sqlx::Decode, sqlx::FromRow)]
+struct NavidromeData {
+    path: String,
+    rating: i8,
+}
+
+#[derive(Debug, sqlx::Decode, sqlx::FromRow)]
 struct Track {
     source: Source,
     artist: String,
@@ -13,7 +19,7 @@ struct Track {
     track_nbr: i8,
     rating: f32,
     path: Option<String>,
-    navidrome_rating: Option<i8>,
+    navidrome_data: Option<NavidromeData>,
 }
 
 impl Track {
@@ -40,7 +46,7 @@ impl Track {
                 path = path.trim_start_matches("/");
                 let mut conn = SqliteConnection::connect(&nav_db).await.unwrap();
                 println!("{:#?}", &path);
-                let rating: Option<Track> = sqlx::query_as(source)
+                let rating: Option<NavidromeData> = sqlx::query_as(source)
                     .bind(Source::Plex)
                     .bind(path)
                     .bind(nav_user)
@@ -79,14 +85,8 @@ fn get_source_query(source: &Source) -> &str {
         Source::Navidrome => {
             r#"
             select
-                $1 as source,
-               	track.artist as artist,
-               	track.album as album,
-               	track.title as track,
-               	track.track_number as track_nbr,
-               	null as rating,
                	track.path as path,
-                annotation.rating as navidrome_rating
+                annotation.rating as rating
 
             from media_file track
 
@@ -142,7 +142,6 @@ fn get_source_query(source: &Source) -> &str {
             order by artist.title, album.title, track."index";
         "#
         }
-        Source::Navidrome => r#""#,
     }
 }
 
