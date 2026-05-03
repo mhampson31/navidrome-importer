@@ -36,7 +36,7 @@ fn get_source_query(source: &Source) -> &str {
                album.title as album,
                track.title as track,
                track."index" as track_nbr,
-               s.rating as rating,
+               settings.rating as rating,
                part.file
 
             from metadata_items artist
@@ -47,8 +47,8 @@ fn get_source_query(source: &Source) -> &str {
             join metadata_items track
               on album.id = track.parent_id
 
-            join metadata_item_settings s
-              on s.guid = track.guid
+            join metadata_item_settings settings
+              on settings.guid = track.guid
 
              /* We don't need anything from media_items.
                 It just lets us link metadata_items to media_parts
@@ -64,7 +64,7 @@ fn get_source_query(source: &Source) -> &str {
                 from section_locations sl
                 where sl.root_path = $2
             )
-              and s.rating is not null
+              and settings.rating is not null
 
             order by artist.title, album.title, track."index";
         "#
