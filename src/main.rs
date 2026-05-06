@@ -142,6 +142,7 @@ fn get_source_query(source: &Source) -> &str {
             order by artist.title, album.title, track."index";
         "#
         }
+        Source::Navidrome => r#""#,
     }
 }
 
