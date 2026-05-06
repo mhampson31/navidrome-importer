@@ -7,6 +7,7 @@ use std::env;
 #[derive(Debug, sqlx::FromRow)]
 struct NavidromeData {
     path: String,
+    item_id: String,
     rating: i8,
 }
 
@@ -23,7 +24,7 @@ struct Track {
 }
 
 impl Track {
-    async fn get_navidrome_rating(&self) -> Option<NavidromeData> {
+    async fn get_navidrome_rating(&mut self) -> Result<(), sqlx::error::Error> {
         let source = get_source_query(&Source::Navidrome);
 
         let mut home = env::home_dir().unwrap();
@@ -50,13 +51,13 @@ impl Track {
                     .bind(path)
                     .bind(nav_user)
                     .fetch_optional(&mut conn)
-                    .await
-                    .unwrap();
+                    .await?;
                 rating
             }
         };
 
-        m
+        self.navidrome_data = m;
+        Ok(())
     }
 }
 
@@ -85,6 +86,7 @@ fn get_source_query(source: &Source) -> &str {
             r#"
             select
                	track.path as path,
+                track.id as item_id,
                 annotation.rating as rating
 
             from media_file track
@@ -93,10 +95,10 @@ fn get_source_query(source: &Source) -> &str {
               on track.id = annotation.item_id
 
             where track.path = $1
+              and annotation.item_type = "media_file"
               and annotation.user_id = (
                   select user_id from user u where u.user_name = $2
               );
-
             "#
         }
 
@@ -163,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
 
     let source_db = get_source_query(&Source::Plex);
 
-    let ratings: Vec<Track> = sqlx::query_as(source_db)
+    let mut ratings: Vec<Track> = sqlx::query_as(source_db)
         .bind(&library)
         .fetch_all(&mut conn)
         .await
@@ -172,7 +174,9 @@ async fn main() -> anyhow::Result<()> {
 
     conn.close().await?;
 
-    println!("{:#?}", ratings[0].get_navidrome_rating().await);
+    ratings[0].get_navidrome_rating().await?;
+
+    println!("{:#?}", ratings[0]);
 
     Ok(())
 }
