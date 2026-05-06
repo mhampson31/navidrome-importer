@@ -12,6 +12,47 @@ struct Track {
     track: String,
     track_nbr: i8,
     rating: f32,
+    path: Option<String>,
+    navidrome_rating: Option<i8>,
+}
+
+impl Track {
+    async fn get_navidrome_rating(&self) -> Option<Track> {
+        let source = get_source_query(&Source::Navidrome);
+
+        let mut home = env::home_dir().unwrap();
+        home.push(".navidrome-importer");
+        home.push("settings.toml");
+
+        let settings = Config::builder()
+            .add_source(config::File::with_name(home.to_str().unwrap()))
+            .build()
+            .unwrap();
+
+        let library = settings.get::<String>("library").unwrap();
+        let nav_user = settings.get::<String>("nav_user").unwrap();
+        let nav_db = settings.get::<String>("navidrome").unwrap();
+
+        let m = match &self.path {
+            None => None,
+            Some(p) => {
+                let mut path = p.trim_start_matches(&library);
+                path = path.trim_start_matches("/");
+                let mut conn = SqliteConnection::connect(&nav_db).await.unwrap();
+                println!("{:#?}", &path);
+                let rating: Option<Track> = sqlx::query_as(source)
+                    .bind(Source::Plex)
+                    .bind(path)
+                    .bind(nav_user)
+                    .fetch_optional(&mut conn)
+                    .await
+                    .unwrap();
+                rating
+            }
+        };
+
+        m
+    }
 }
 
 #[derive(Parser)]
@@ -19,6 +60,12 @@ struct Track {
 struct Cli {
     #[arg(short, long)]
     config: Option<String>,
+    /*
+     * preview
+     * new only
+     * update all
+     * show overwrites
+     */
 }
 
 #[derive(Debug, sqlx::Type)]
@@ -29,6 +76,31 @@ enum Source {
 
 fn get_source_query(source: &Source) -> &str {
     match source {
+        Source::Navidrome => {
+            r#"
+            select
+                $1 as source,
+               	track.artist as artist,
+               	track.album as album,
+               	track.title as track,
+               	track.track_number as track_nbr,
+               	null as rating,
+               	track.path as path,
+                annotation.rating as navidrome_rating
+
+            from media_file track
+
+            join annotation
+              on track.id = annotation.item_id
+
+            where track.path = $2
+              and annotation.user_id = (
+                  select user_id from user u where u.user_name = $3
+              );
+
+            "#
+        }
+
         Source::Plex => {
             r#"
             select $1 as source,
@@ -37,7 +109,8 @@ fn get_source_query(source: &Source) -> &str {
                track.title as track,
                track."index" as track_nbr,
                settings.rating as rating,
-               part.file
+               part.file as path,
+               null as navidrome_rating
 
             from metadata_items artist
 
@@ -97,10 +170,13 @@ async fn main() -> anyhow::Result<()> {
         .bind(Source::Plex)
         .bind(&library)
         .fetch_all(&mut conn)
-        .await?;
+        .await
+        .expect("Could not query Plex db");
     println!("{:#?}", ratings.len());
 
     conn.close().await?;
+
+    println!("{:#?}", ratings[0].get_navidrome_rating().await);
 
     Ok(())
 }
