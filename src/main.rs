@@ -4,26 +4,26 @@ use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
 use std::env;
 
-#[derive(Debug, sqlx::Decode, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 struct NavidromeData {
     path: String,
     rating: i8,
 }
 
-#[derive(Debug, sqlx::Decode, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 struct Track {
-    source: Source,
     artist: String,
     album: String,
     track: String,
     track_nbr: i8,
     rating: f32,
     path: Option<String>,
+    #[sqlx(skip)]
     navidrome_data: Option<NavidromeData>,
 }
 
 impl Track {
-    async fn get_navidrome_rating(&self) -> Option<Track> {
+    async fn get_navidrome_rating(&self) -> Option<NavidromeData> {
         let source = get_source_query(&Source::Navidrome);
 
         let mut home = env::home_dir().unwrap();
@@ -47,7 +47,6 @@ impl Track {
                 let mut conn = SqliteConnection::connect(&nav_db).await.unwrap();
                 println!("{:#?}", &path);
                 let rating: Option<NavidromeData> = sqlx::query_as(source)
-                    .bind(Source::Plex)
                     .bind(path)
                     .bind(nav_user)
                     .fetch_optional(&mut conn)
@@ -93,9 +92,9 @@ fn get_source_query(source: &Source) -> &str {
             join annotation
               on track.id = annotation.item_id
 
-            where track.path = $2
+            where track.path = $1
               and annotation.user_id = (
-                  select user_id from user u where u.user_name = $3
+                  select user_id from user u where u.user_name = $2
               );
 
             "#
@@ -103,13 +102,13 @@ fn get_source_query(source: &Source) -> &str {
 
         Source::Plex => {
             r#"
-            select $1 as source,
+            select
                artist.title as artist,
                album.title as album,
                track.title as track,
                track."index" as track_nbr,
-               part.file
-               settings.rating as rating,
+               part.file as path,
+               settings.rating as rating
 
             from metadata_items artist
 
@@ -134,7 +133,7 @@ fn get_source_query(source: &Source) -> &str {
             where track.library_section_id in (
                 select sl.library_section_id
                 from section_locations sl
-                where sl.root_path = $2
+                where sl.root_path = $1
             )
               and settings.rating is not null
 
@@ -162,10 +161,9 @@ async fn main() -> anyhow::Result<()> {
 
     let mut conn = SqliteConnection::connect(&source).await?;
 
-    let source = get_source_query(&Source::Plex);
+    let source_db = get_source_query(&Source::Plex);
 
-    let ratings: Vec<Track> = sqlx::query_as(source)
-        .bind(Source::Plex)
+    let ratings: Vec<Track> = sqlx::query_as(source_db)
         .bind(&library)
         .fetch_all(&mut conn)
         .await
