@@ -4,11 +4,19 @@ use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
 use std::env;
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Clone, Debug, sqlx::FromRow)]
 struct NavidromeData {
     path: String,
     item_id: String,
     rating: i8,
+}
+
+#[derive(Debug)]
+enum Comparison {
+    New,
+    Conflicts,
+    NoChange,
+    NoTrack,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -21,6 +29,8 @@ struct Track {
     path: Option<String>,
     #[sqlx(skip)]
     navidrome_data: Option<NavidromeData>,
+    #[sqlx(skip)]
+    comparison: Option<Comparison>,
 }
 
 impl Track {
@@ -40,24 +50,47 @@ impl Track {
         let nav_user = settings.get::<String>("nav_user").unwrap();
         let nav_db = settings.get::<String>("navidrome").unwrap();
 
-        let m = match &self.path {
-            None => None,
-            Some(p) => {
-                let mut path = p.trim_start_matches(&library);
-                path = path.trim_start_matches("/");
-                let mut conn = SqliteConnection::connect(&nav_db).await.unwrap();
-                println!("{:#?}", &path);
-                let rating: Option<NavidromeData> = sqlx::query_as(source)
-                    .bind(path)
-                    .bind(nav_user)
-                    .fetch_optional(&mut conn)
-                    .await?;
-                rating
-            }
+        if let Some(p) = &self.path {
+            let mut path = p.trim_start_matches(&library);
+            path = path.trim_start_matches("/");
+            let mut conn = SqliteConnection::connect(&nav_db).await.unwrap();
+            println!("{:#?}", &path);
+            let rating: Option<NavidromeData> = sqlx::query_as(source)
+                .bind(path)
+                .bind(nav_user)
+                .fetch_optional(&mut conn)
+                .await?;
+            self.navidrome_data = rating.clone();
+            if let Some(n) = rating {
+                self.comparison = {
+                    let source_rating = (&self.rating / 2.0).round() as i8;
+
+                    if n.rating == source_rating {
+                        Some(Comparison::NoChange)
+                    } else if n.rating > 0 && source_rating > 0 {
+                        Some(Comparison::Conflicts)
+                    } else {
+                        Some(Comparison::New)
+                    }
+                }
+            } else {
+                self.comparison = Some(Comparison::NoTrack);
+            };
         };
 
-        self.navidrome_data = m;
         Ok(())
+    }
+
+    fn print(&self) {
+        println!(
+            "{}, {}, {}, {}, {}, {:#?}",
+            &self.artist,
+            &self.album,
+            &self.track,
+            &self.track_nbr,
+            &self.rating,
+            &self.navidrome_data
+        );
     }
 }
 
@@ -176,7 +209,7 @@ async fn main() -> anyhow::Result<()> {
 
     ratings[0].get_navidrome_rating().await?;
 
-    println!("{:#?}", ratings[0]);
+    println!("{:#?}", ratings[0].print());
 
     Ok(())
 }
