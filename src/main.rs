@@ -3,7 +3,7 @@ use clap::Parser;
 use config::Config;
 use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
-use std::env;
+use std::{env, include_str};
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct NavidromeData {
@@ -20,14 +20,14 @@ enum Comparison {
     NoTrack,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Default, sqlx::FromRow)]
 struct Track {
     artist: String,
     album: String,
     track: String,
-    track_nbr: i8,
+    track_nbr: i32,
     rating: f32,
-    play_count: u8,
+    play_count: i32,
     play_date: Option<String>,
     path: Option<String>,
     #[sqlx(skip)]
@@ -38,8 +38,6 @@ struct Track {
 
 impl Track {
     async fn get_navidrome_rating(&mut self) -> Result<(), sqlx::error::Error> {
-        let source = get_source_query(&Source::Navidrome);
-
         let mut home = env::home_dir().unwrap();
         home.push(".navidrome-importer");
         home.push("settings.toml");
@@ -58,11 +56,13 @@ impl Track {
             path = path.trim_start_matches("/");
             let mut conn = SqliteConnection::connect(&nav_db).await.unwrap();
             println!("{:#?}", &path);
-            let rating: Option<NavidromeData> = sqlx::query_as(source)
-                .bind(path)
-                .bind(nav_user)
-                .fetch_optional(&mut conn)
-                .await?;
+
+            let rating: Option<NavidromeData> =
+                sqlx::query_as(include_str!("navidrome_source.sql"))
+                    .bind(path)
+                    .bind(nav_user)
+                    .fetch_optional(&mut conn)
+                    .await?;
             self.navidrome_data = rating.clone();
             if let Some(n) = rating {
                 self.comparison = {
@@ -118,92 +118,6 @@ enum Source {
     Plex = 2,
 }
 
-fn get_source_query(source: &Source) -> &str {
-    match source {
-        Source::Navidrome => {
-            r#"
-            select
-               	track.path as path,
-                track.id as item_id,
-                annotation.rating as rating,
-                annotation.play_count as play_count,
-                annotation.play_date as play_date
-
-            from media_file track
-
-            join annotation
-              on track.id = annotation.item_id
-
-            where track.path = $1
-              and annotation.item_type = "media_file"
-              and annotation.user_id = (
-                  select user_id from user u where u.user_name = $2
-              );
-            "#
-        }
-
-        Source::Plex => {
-            r#"
-                select artist.title as artist,
-                    album.title as album,
-                    track.title as track,
-                    track."index" as track_nbr,
-                    part.file as path,
-                    settings.rating as rating,
-                    count(views.id) as play_count,
-                    datetime(max(views.viewed_at), 'unixepoch') as play_date
-
-                    from metadata_items artist
-
-                    join metadata_items album
-                        on artist.id = album.parent_id
-
-                    join metadata_items track
-                        on album.id = track.parent_id
-
-                    join metadata_item_settings settings
-                        on settings.guid = track.guid
-
-                    left join metadata_item_views views
-                        on views.account_id = settings.account_id
-                        and views.guid = settings.guid
-
-                    /* We don't need anything from media_items.
-                     * It just lets us link metadata_items to media_parts
-                     */
-                    join media_items media
-                        on track.id = media.metadata_item_id
-
-                    join media_parts part
-                        on part.media_item_id = media.id
-
-                    where track.library_section_id in (
-                        select sl.library_section_id
-                        from section_locations sl
-                        where sl.root_path = $1
-                    )
-
-                    and settings.account_id = (
-                        select a.id
-                        from accounts a
-                        where a.name = $2
-                        )
-                    and settings.rating is not null
-
-                    group by
-                        artist.title,
-                        album.title,
-                        track.title,
-                        track."index",
-                        part.file,
-                        settings.rating
-
-                    order by artist.title, album.title, track."index";
-        "#
-        }
-    }
-}
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let mut home = env::home_dir().unwrap();
@@ -223,9 +137,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut conn = SqliteConnection::connect(&source).await?;
 
-    let source_db = get_source_query(&Source::Plex);
-
-    let mut ratings: Vec<Track> = sqlx::query_as(source_db)
+    let mut ratings: Vec<Track> = sqlx::query_as(include_str!("plex_source.sql"))
         .bind(&library)
         .bind(&source_user)
         .fetch_all(&mut conn)
