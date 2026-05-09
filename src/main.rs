@@ -1,3 +1,4 @@
+use chrono::NaiveDateTime;
 use clap::Parser;
 use config::Config;
 use serde::Deserialize;
@@ -26,6 +27,8 @@ struct Track {
     track: String,
     track_nbr: i8,
     rating: f32,
+    play_count: u8,
+    play_date: Option<String>,
     path: Option<String>,
     #[sqlx(skip)]
     navidrome_data: Option<NavidromeData>,
@@ -83,12 +86,14 @@ impl Track {
 
     fn print(&self) {
         println!(
-            "{}, {}, {}, {}, {}, {:#?}",
+            "{}, {}, {}, {}, {}, {}, {:#?}, {:#?}",
             &self.artist,
             &self.album,
             &self.track,
             &self.track_nbr,
             &self.rating,
+            &self.play_count,
+            &self.play_date,
             &self.navidrome_data
         );
     }
@@ -120,7 +125,9 @@ fn get_source_query(source: &Source) -> &str {
             select
                	track.path as path,
                 track.id as item_id,
-                annotation.rating as rating
+                annotation.rating as rating,
+                annotation.play_count as play_count,
+                annotation.play_date as play_date
 
             from media_file track
 
@@ -137,42 +144,61 @@ fn get_source_query(source: &Source) -> &str {
 
         Source::Plex => {
             r#"
-            select
-               artist.title as artist,
-               album.title as album,
-               track.title as track,
-               track."index" as track_nbr,
-               part.file as path,
-               settings.rating as rating
+                select artist.title as artist,
+                    album.title as album,
+                    track.title as track,
+                    track."index" as track_nbr,
+                    part.file as path,
+                    settings.rating as rating,
+                    count(views.id) as play_count,
+                    datetime(max(views.viewed_at), 'unixepoch') as play_date
 
-            from metadata_items artist
+                    from metadata_items artist
 
-            join metadata_items album
-              on artist.id = album.parent_id
+                    join metadata_items album
+                        on artist.id = album.parent_id
 
-            join metadata_items track
-              on album.id = track.parent_id
+                    join metadata_items track
+                        on album.id = track.parent_id
 
-            join metadata_item_settings settings
-              on settings.guid = track.guid
+                    join metadata_item_settings settings
+                        on settings.guid = track.guid
 
-             /* We don't need anything from media_items.
-                It just lets us link metadata_items to media_parts
-              */
-            join media_items media
-              on track.id = media.metadata_item_id
+                    left join metadata_item_views views
+                        on views.account_id = settings.account_id
+                        and views.guid = settings.guid
 
-            join media_parts part
-              on part.media_item_id = media.id
+                    /* We don't need anything from media_items.
+                     * It just lets us link metadata_items to media_parts
+                     */
+                    join media_items media
+                        on track.id = media.metadata_item_id
 
-            where track.library_section_id in (
-                select sl.library_section_id
-                from section_locations sl
-                where sl.root_path = $1
-            )
-              and settings.rating is not null
+                    join media_parts part
+                        on part.media_item_id = media.id
 
-            order by artist.title, album.title, track."index";
+                    where track.library_section_id in (
+                        select sl.library_section_id
+                        from section_locations sl
+                        where sl.root_path = $1
+                    )
+
+                    and settings.account_id = (
+                        select a.id
+                        from accounts a
+                        where a.name = $2
+                        )
+                    and settings.rating is not null
+
+                    group by
+                        artist.title,
+                        album.title,
+                        track.title,
+                        track."index",
+                        part.file,
+                        settings.rating
+
+                    order by artist.title, album.title, track."index";
         "#
         }
     }
@@ -190,6 +216,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap();
 
     let source = settings.get::<String>("source").unwrap();
+    let source_user = settings.get::<String>("source_user").unwrap();
     let library = settings.get::<String>("library").unwrap();
 
     println!("Getting ratings from {:?}", &source);
@@ -200,6 +227,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut ratings: Vec<Track> = sqlx::query_as(source_db)
         .bind(&library)
+        .bind(&source_user)
         .fetch_all(&mut conn)
         .await
         .expect("Could not query Plex db");
