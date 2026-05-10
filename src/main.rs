@@ -82,8 +82,13 @@ impl Track {
                 let source_rating = (&self.rating / 2.0).round() as i32;
 
                 let update: Update = Update {
+                    /* todo: needs logic to handle conflicts */
                     new_rating: source_rating,
+
+                    /* add the source's play count to Navidrome's */
                     new_play_count: &self.play_count + n.play_count,
+
+                    /* compare both systems to determine most recent date played */
                     new_play_date: max(n.play_date, self.play_date.clone()),
                 };
                 println!("New data: {:#?}", update);
