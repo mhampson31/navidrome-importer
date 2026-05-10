@@ -7,11 +7,9 @@ select
 
 from media_file track
 
-join annotation
-    on track.id = annotation.item_id
+left join annotation
+  on track.id = annotation.item_id
+ and annotation.item_type = "media_file"
+ and annotation.user_id = $1
 
-where track.path = $1
-    and annotation.item_type = "media_file"
-    and annotation.user_id = (
-        select user_id from user u where u.user_name = $2
-    );
+where track.path = $2;

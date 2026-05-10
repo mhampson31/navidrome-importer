@@ -3,21 +3,47 @@ use clap::Parser;
 use config::Config;
 use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
-use std::{env, include_str, sync::LazyLock};
+use std::{cmp::max, env, include_str, sync::LazyLock};
+
+static SOURCE_LIBRARY: LazyLock<String> = LazyLock::new(|| {
+    let settings = get_settings();
+    settings.get::<String>("source_library").unwrap()
+});
+
+static SOURCE_USER: LazyLock<String> = LazyLock::new(|| {
+    let settings = get_settings();
+    settings.get::<String>("source_user").unwrap()
+});
+
+static SOURCE_DB: LazyLock<String> = LazyLock::new(|| {
+    let settings = get_settings();
+    settings.get::<String>("source_db").unwrap()
+});
+
+static NAV_DB: LazyLock<String> = LazyLock::new(|| {
+    let settings = get_settings();
+    settings.get::<String>("navidrome_db").unwrap()
+});
+
+static NAV_USER: LazyLock<String> = LazyLock::new(|| {
+    let settings = get_settings();
+    settings.get::<String>("nav_user").unwrap()
+});
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct NavidromeData {
     path: String,
     item_id: String,
-    rating: i8,
+    rating: i32,
+    play_count: i32,
+    play_date: String,
 }
 
 #[derive(Debug)]
-enum Comparison {
-    New,
-    Conflicts,
-    NoChange,
-    NoTrack,
+struct Update {
+    new_rating: i32,
+    new_play_count: i32,
+    new_play_date: String,
 }
 
 #[derive(Debug, Default, sqlx::FromRow)]
@@ -28,44 +54,42 @@ struct Track {
     track_nbr: i32,
     rating: f32,
     play_count: i32,
-    play_date: Option<String>,
+    play_date: String,
     path: Option<String>,
     #[sqlx(skip)]
     navidrome_data: Option<NavidromeData>,
     #[sqlx(skip)]
-    comparison: Option<Comparison>,
+    update: Option<Update>,
 }
 
 impl Track {
-    async fn get_navidrome_rating(&mut self) -> Result<(), sqlx::error::Error> {
+    async fn prepare_update(&mut self) -> Result<(), sqlx::error::Error> {
         if let Some(p) = &self.path {
             let mut path = p.trim_start_matches(&*SOURCE_LIBRARY);
             path = path.trim_start_matches("/");
             let mut conn = SqliteConnection::connect(&*NAV_DB).await.unwrap();
-            println!("{:#?}", &path);
 
-            let rating: Option<NavidromeData> =
+            let nav_data: Option<NavidromeData> =
                 sqlx::query_as(include_str!("navidrome_source.sql"))
-                    .bind(path)
                     .bind(&*NAV_USER)
+                    .bind(path)
                     .fetch_optional(&mut conn)
                     .await?;
-            self.navidrome_data = rating.clone();
-            if let Some(n) = rating {
-                self.comparison = {
-                    let source_rating = (&self.rating / 2.0).round() as i8;
 
-                    if n.rating == source_rating {
-                        Some(Comparison::NoChange)
-                    } else if n.rating > 0 && source_rating > 0 {
-                        Some(Comparison::Conflicts)
-                    } else {
-                        Some(Comparison::New)
-                    }
-                }
+            self.navidrome_data = nav_data.clone();
+
+            if let Some(n) = nav_data {
+                let source_rating = (&self.rating / 2.0).round() as i32;
+
+                let update: Update = Update {
+                    new_rating: source_rating,
+                    new_play_count: &self.play_count + n.play_count,
+                    new_play_date: max(n.play_date, self.play_date.clone()),
+                };
+                println!("New data: {:#?}", update);
             } else {
-                self.comparison = Some(Comparison::NoTrack);
-            };
+                println!("No data found for {:#?} and {:#?}", path, &*NAV_USER);
+            }
         };
 
         Ok(())
@@ -73,7 +97,7 @@ impl Track {
 
     fn print(&self) {
         println!(
-            "{}, {}, {}, {}, {}, {}, {:#?}, {:#?}",
+            "{}, {}, {}, {}, {}, plays {}, date {:#?}, nav {:#?}",
             &self.artist,
             &self.album,
             &self.track,
@@ -99,12 +123,6 @@ struct Cli {
      */
 }
 
-#[derive(Debug, sqlx::Type)]
-enum Source {
-    Navidrome = 1,
-    Plex = 2,
-}
-
 fn get_settings() -> Config {
     let mut home = env::home_dir().unwrap();
     home.push(".navidrome-importer");
@@ -115,31 +133,6 @@ fn get_settings() -> Config {
         .build()
         .unwrap()
 }
-
-static SOURCE_LIBRARY: LazyLock<String> = LazyLock::new(|| {
-    let settings = get_settings();
-    settings.get::<String>("source_library").unwrap()
-});
-
-static SOURCE_USER: LazyLock<String> = LazyLock::new(|| {
-    let settings = get_settings();
-    settings.get::<String>("source_user").unwrap()
-});
-
-static SOURCE_DB: LazyLock<String> = LazyLock::new(|| {
-    let settings = get_settings();
-    settings.get::<String>("source_db").unwrap()
-});
-
-static NAV_USER: LazyLock<String> = LazyLock::new(|| {
-    let settings = get_settings();
-    settings.get::<String>("nav_user").unwrap()
-});
-
-static NAV_DB: LazyLock<String> = LazyLock::new(|| {
-    let settings = get_settings();
-    settings.get::<String>("navidrome_db").unwrap()
-});
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -157,9 +150,11 @@ async fn main() -> anyhow::Result<()> {
 
     conn.close().await?;
 
-    ratings[0].get_navidrome_rating().await?;
+    let r = 2;
 
-    println!("{:#?}", ratings[0].print());
+    ratings[r].prepare_update().await?;
+
+    ratings[r].print();
 
     Ok(())
 }
