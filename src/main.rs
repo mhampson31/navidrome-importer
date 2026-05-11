@@ -39,7 +39,7 @@ struct NavidromeData {
     play_date: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Update {
     new_rating: i32,
     new_play_count: i32,
@@ -60,6 +60,18 @@ struct Track {
     navidrome_data: Option<NavidromeData>,
     #[sqlx(skip)]
     update: Option<Update>,
+    #[sqlx(skip)]
+    status: Status,
+}
+
+#[derive(Debug, Default)]
+enum Status {
+    #[default]
+    NotChecked,
+    NoChange,
+    CanUpdate,
+    Updated,
+    MissingNavData,
 }
 
 impl Track {
@@ -81,16 +93,31 @@ impl Track {
             if let Some(n) = nav_data {
                 let source_rating = (&self.rating / 2.0).round() as i32;
 
+                /* add the source's play count to Navidrome's */
+                let new_play_count = &self.play_count + n.play_count;
+
+                /* compare both systems to determine most recent date played */
+                let new_play_date = max(n.play_date.clone(), self.play_date.clone());
+
+                /* Has anything changed? If so, this track will need to be updated in Navidrome */
+                if source_rating > n.rating
+                    || new_play_count > n.play_count
+                    || new_play_date.clone() > n.play_date.clone()
+                {
+                    self.status = Status::CanUpdate;
+                } else {
+                    self.status = Status::NoChange;
+                }
+
                 let update: Update = Update {
                     /* todo: needs logic to handle conflicts */
                     new_rating: source_rating,
-
-                    /* add the source's play count to Navidrome's */
-                    new_play_count: &self.play_count + n.play_count,
-
-                    /* compare both systems to determine most recent date played */
-                    new_play_date: max(n.play_date, self.play_date.clone()),
+                    new_play_count,
+                    new_play_date,
                 };
+
+                self.update = Some(update.clone());
+
                 println!("New data: {:#?}", update);
             } else {
                 println!("No data found for {:#?} and {:#?}", path, &*NAV_USER);
@@ -102,7 +129,7 @@ impl Track {
 
     fn print(&self) {
         println!(
-            "{}, {}, {}, {}, {}, plays {}, date {:#?}, nav {:#?}",
+            "{}, {}, {}, {}, {}, plays {}, date {:#?}, nav {:#?}, status {:#?}",
             &self.artist,
             &self.album,
             &self.track,
@@ -110,7 +137,8 @@ impl Track {
             &self.rating,
             &self.play_count,
             &self.play_date,
-            &self.navidrome_data
+            &self.navidrome_data,
+            &self.status
         );
     }
 }
@@ -155,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
 
     conn.close().await?;
 
-    let r = 2;
+    let r = 1;
 
     ratings[r].prepare_update().await?;
 
