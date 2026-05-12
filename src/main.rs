@@ -1,3 +1,4 @@
+use anyhow;
 use chrono::NaiveDateTime;
 use clap::Parser;
 use config::Config;
@@ -75,7 +76,7 @@ enum Status {
 }
 
 impl Track {
-    async fn prepare_update(&mut self) -> Result<(), sqlx::error::Error> {
+    async fn prepare_update(&mut self) -> anyhow::Result<()> {
         if let Some(p) = &self.path {
             let mut path = p.trim_start_matches(&*SOURCE_LIBRARY);
             path = path.trim_start_matches("/");
@@ -125,6 +126,45 @@ impl Track {
         };
 
         Ok(())
+    }
+
+    async fn do_update(&mut self) -> anyhow::Result<bool> {
+        let mut conn = SqliteConnection::connect(&*NAV_DB).await?;
+
+        match &self.status {
+            Status::CanUpdate => {
+                let u = &self
+                    .update
+                    .clone()
+                    .ok_or(anyhow::anyhow!("Missing update data for track"))?;
+                let n = &self
+                    .navidrome_data
+                    .clone()
+                    .ok_or(anyhow::anyhow!("Missing Navidrome data for track"))?;
+
+                let new_rating_date = if u.new_rating > n.rating { true } else { false };
+
+                let rows_affected = sqlx::query(include_str!("navidrome_update.sql"))
+                    .bind(&*NAV_USER)
+                    .bind(n.item_id.clone())
+                    .bind(u.new_play_count)
+                    .bind(u.new_play_date.clone())
+                    .bind(u.new_rating)
+                    .bind(new_rating_date)
+                    .execute(&mut conn)
+                    .await?
+                    .rows_affected();
+
+                self.status = Status::Updated;
+
+                Ok(rows_affected > 0)
+            }
+            Status::MissingNavData => {
+                /* TODO: What do we do here? */
+                Ok(false)
+            }
+            _ => Ok(false),
+        }
     }
 
     fn print(&self) {
@@ -186,6 +226,7 @@ async fn main() -> anyhow::Result<()> {
     let r = 1;
 
     ratings[r].prepare_update().await?;
+    ratings[r].do_update().await?;
 
     ratings[r].print();
 
