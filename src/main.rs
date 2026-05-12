@@ -1,5 +1,4 @@
 use anyhow;
-use chrono::NaiveDateTime;
 use clap::Parser;
 use config::Config;
 use serde::Deserialize;
@@ -122,7 +121,7 @@ impl Track {
                 println!("New data: {:#?}", update);
             } else {
                 println!("No data found for {:#?} and {:#?}", path, &*NAV_USER);
-            }
+            };
         };
 
         Ok(())
