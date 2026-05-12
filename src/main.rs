@@ -1,57 +1,185 @@
+use anyhow;
+use chrono::NaiveDateTime;
 use clap::Parser;
 use config::Config;
 use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
-use std::env;
+use std::{cmp::max, env, include_str, sync::LazyLock};
 
-#[derive(Debug, sqlx::FromRow)]
+static SOURCE_LIBRARY: LazyLock<String> = LazyLock::new(|| {
+    let settings = get_settings();
+    settings.get::<String>("source_library").unwrap()
+});
+
+static SOURCE_USER: LazyLock<String> = LazyLock::new(|| {
+    let settings = get_settings();
+    settings.get::<String>("source_user").unwrap()
+});
+
+static SOURCE_DB: LazyLock<String> = LazyLock::new(|| {
+    let settings = get_settings();
+    settings.get::<String>("source_db").unwrap()
+});
+
+static NAV_DB: LazyLock<String> = LazyLock::new(|| {
+    let settings = get_settings();
+    settings.get::<String>("navidrome_db").unwrap()
+});
+
+static NAV_USER: LazyLock<String> = LazyLock::new(|| {
+    let settings = get_settings();
+    settings.get::<String>("nav_user").unwrap()
+});
+
+#[derive(Clone, Debug, sqlx::FromRow)]
+struct NavidromeData {
+    path: String,
+    item_id: String,
+    rating: i32,
+    play_count: i32,
+    play_date: String,
+}
+
+#[derive(Debug, Clone)]
+struct Update {
+    new_rating: i32,
+    new_play_count: i32,
+    new_play_date: String,
+}
+
+#[derive(Debug, Default, sqlx::FromRow)]
 struct Track {
-    source: Source,
     artist: String,
     album: String,
     track: String,
-    track_nbr: i8,
+    track_nbr: i32,
     rating: f32,
+    play_count: i32,
+    play_date: String,
     path: Option<String>,
-    navidrome_rating: Option<i8>,
+    #[sqlx(skip)]
+    navidrome_data: Option<NavidromeData>,
+    #[sqlx(skip)]
+    update: Option<Update>,
+    #[sqlx(skip)]
+    status: Status,
+}
+
+#[derive(Debug, Default)]
+enum Status {
+    #[default]
+    NotChecked,
+    NoChange,
+    CanUpdate,
+    Updated,
+    MissingNavData,
 }
 
 impl Track {
-    async fn get_navidrome_rating(&self) -> Option<Track> {
-        let source = get_source_query(&Source::Navidrome);
+    async fn prepare_update(&mut self) -> anyhow::Result<()> {
+        if let Some(p) = &self.path {
+            let mut path = p.trim_start_matches(&*SOURCE_LIBRARY);
+            path = path.trim_start_matches("/");
+            let mut conn = SqliteConnection::connect(&*NAV_DB).await.unwrap();
 
-        let mut home = env::home_dir().unwrap();
-        home.push(".navidrome-importer");
-        home.push("settings.toml");
-
-        let settings = Config::builder()
-            .add_source(config::File::with_name(home.to_str().unwrap()))
-            .build()
-            .unwrap();
-
-        let library = settings.get::<String>("library").unwrap();
-        let nav_user = settings.get::<String>("nav_user").unwrap();
-        let nav_db = settings.get::<String>("navidrome").unwrap();
-
-        let m = match &self.path {
-            None => None,
-            Some(p) => {
-                let mut path = p.trim_start_matches(&library);
-                path = path.trim_start_matches("/");
-                let mut conn = SqliteConnection::connect(&nav_db).await.unwrap();
-                println!("{:#?}", &path);
-                let rating: Option<Track> = sqlx::query_as(source)
-                    .bind(Source::Plex)
+            let nav_data: Option<NavidromeData> =
+                sqlx::query_as(include_str!("navidrome_source.sql"))
+                    .bind(&*NAV_USER)
                     .bind(path)
-                    .bind(nav_user)
                     .fetch_optional(&mut conn)
-                    .await
-                    .unwrap();
-                rating
+                    .await?;
+
+            self.navidrome_data = nav_data.clone();
+
+            if let Some(n) = nav_data {
+                let source_rating = (&self.rating / 2.0).round() as i32;
+
+                /* add the source's play count to Navidrome's */
+                let new_play_count = &self.play_count + n.play_count;
+
+                /* compare both systems to determine most recent date played */
+                let new_play_date = max(n.play_date.clone(), self.play_date.clone());
+
+                /* Has anything changed? If so, this track will need to be updated in Navidrome */
+                if source_rating > n.rating
+                    || new_play_count > n.play_count
+                    || new_play_date.clone() > n.play_date.clone()
+                {
+                    self.status = Status::CanUpdate;
+                } else {
+                    self.status = Status::NoChange;
+                }
+
+                let update: Update = Update {
+                    /* todo: needs logic to handle conflicts */
+                    new_rating: source_rating,
+                    new_play_count,
+                    new_play_date,
+                };
+
+                self.update = Some(update.clone());
+
+                println!("New data: {:#?}", update);
+            } else {
+                println!("No data found for {:#?} and {:#?}", path, &*NAV_USER);
             }
         };
 
-        m
+        Ok(())
+    }
+
+    async fn do_update(&mut self) -> anyhow::Result<bool> {
+        let mut conn = SqliteConnection::connect(&*NAV_DB).await?;
+
+        match &self.status {
+            Status::CanUpdate => {
+                let u = &self
+                    .update
+                    .clone()
+                    .ok_or(anyhow::anyhow!("Missing update data for track"))?;
+                let n = &self
+                    .navidrome_data
+                    .clone()
+                    .ok_or(anyhow::anyhow!("Missing Navidrome data for track"))?;
+
+                let new_rating_date = if u.new_rating > n.rating { true } else { false };
+
+                let rows_affected = sqlx::query(include_str!("navidrome_update.sql"))
+                    .bind(&*NAV_USER)
+                    .bind(n.item_id.clone())
+                    .bind(u.new_play_count)
+                    .bind(u.new_play_date.clone())
+                    .bind(u.new_rating)
+                    .bind(new_rating_date)
+                    .execute(&mut conn)
+                    .await?
+                    .rows_affected();
+
+                self.status = Status::Updated;
+
+                Ok(rows_affected > 0)
+            }
+            Status::MissingNavData => {
+                /* TODO: What do we do here? */
+                Ok(false)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn print(&self) {
+        println!(
+            "{}, {}, {}, {}, {}, plays {}, date {:#?}, nav {:#?}, status {:#?}",
+            &self.artist,
+            &self.album,
+            &self.track,
+            &self.track_nbr,
+            &self.rating,
+            &self.play_count,
+            &self.play_date,
+            &self.navidrome_data,
+            &self.status
+        );
     }
 }
 
@@ -68,107 +196,26 @@ struct Cli {
      */
 }
 
-#[derive(Debug, sqlx::Type)]
-enum Source {
-    Navidrome = 1,
-    Plex = 2,
-}
-
-fn get_source_query(source: &Source) -> &str {
-    match source {
-        Source::Navidrome => {
-            r#"
-            select
-                $1 as source,
-               	track.artist as artist,
-               	track.album as album,
-               	track.title as track,
-               	track.track_number as track_nbr,
-               	null as rating,
-               	track.path as path,
-                annotation.rating as navidrome_rating
-
-            from media_file track
-
-            join annotation
-              on track.id = annotation.item_id
-
-            where track.path = $2
-              and annotation.user_id = (
-                  select user_id from user u where u.user_name = $3
-              );
-
-            "#
-        }
-
-        Source::Plex => {
-            r#"
-            select $1 as source,
-               artist.title as artist,
-               album.title as album,
-               track.title as track,
-               track."index" as track_nbr,
-               settings.rating as rating,
-               part.file as path,
-               null as navidrome_rating
-
-            from metadata_items artist
-
-            join metadata_items album
-              on artist.id = album.parent_id
-
-            join metadata_items track
-              on album.id = track.parent_id
-
-            join metadata_item_settings settings
-              on settings.guid = track.guid
-
-             /* We don't need anything from media_items.
-                It just lets us link metadata_items to media_parts
-              */
-            join media_items media
-              on track.id = media.metadata_item_id
-
-            join media_parts part
-              on part.media_item_id = media.id
-
-            where track.library_section_id in (
-                select sl.library_section_id
-                from section_locations sl
-                where sl.root_path = $2
-            )
-              and settings.rating is not null
-
-            order by artist.title, album.title, track."index";
-        "#
-        }
-        Source::Navidrome => r#""#,
-    }
-}
-
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
+fn get_settings() -> Config {
     let mut home = env::home_dir().unwrap();
     home.push(".navidrome-importer");
     home.push("settings.toml");
 
-    let settings = Config::builder()
+    Config::builder()
         .add_source(config::File::with_name(home.to_str().unwrap()))
         .build()
-        .unwrap();
+        .unwrap()
+}
 
-    let source = settings.get::<String>("source").unwrap();
-    let library = settings.get::<String>("library").unwrap();
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
+    println!("Getting ratings from {:?}", &*SOURCE_DB);
 
-    println!("Getting ratings from {:?}", &source);
+    let mut conn = SqliteConnection::connect(&*SOURCE_DB).await?;
 
-    let mut conn = SqliteConnection::connect(&source).await?;
-
-    let source = get_source_query(&Source::Plex);
-
-    let ratings: Vec<Track> = sqlx::query_as(source)
-        .bind(Source::Plex)
-        .bind(&library)
+    let mut ratings: Vec<Track> = sqlx::query_as(include_str!("plex_source.sql"))
+        .bind(&*SOURCE_LIBRARY)
+        .bind(&*SOURCE_USER)
         .fetch_all(&mut conn)
         .await
         .expect("Could not query Plex db");
@@ -176,7 +223,12 @@ async fn main() -> anyhow::Result<()> {
 
     conn.close().await?;
 
-    println!("{:#?}", ratings[0].get_navidrome_rating().await);
+    let r = 1;
+
+    ratings[r].prepare_update().await?;
+    ratings[r].do_update().await?;
+
+    ratings[r].print();
 
     Ok(())
 }
