@@ -27,7 +27,7 @@ static NAV_DB: LazyLock<String> = LazyLock::new(|| {
 
 static NAV_USER: LazyLock<String> = LazyLock::new(|| {
     let settings = get_settings();
-    settings.get::<String>("nav_user").unwrap()
+    settings.get::<String>("navidrome_user").unwrap()
 });
 
 #[derive(Clone, Debug, sqlx::FromRow)]
