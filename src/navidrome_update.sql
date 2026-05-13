@@ -14,7 +14,7 @@ values (
 	$3,
 	trim($4),
 	$5,
-	$6
+	case $6 when 1 then datetime('now', 'subsec') else null end
 )
 
 on conflict (user_id, item_id, item_type)
@@ -22,4 +22,4 @@ do update set
 	play_count = $3,
 	play_date = $4,
 	rating = $5,
-	rated_at = $6;
+	rated_at = case $6 when 1 then datetime('now', 'subsec') else null end;

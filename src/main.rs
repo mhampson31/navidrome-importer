@@ -1,5 +1,5 @@
 use anyhow;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use config::Config;
 use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
@@ -64,7 +64,7 @@ struct Track {
     status: Status,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 enum Status {
     #[default]
     NotChecked,
@@ -118,9 +118,10 @@ impl Track {
 
                 self.update = Some(update.clone());
 
-                println!("New data: {:#?}", update);
+                //println!("New data: {:#?}", update);
             } else {
-                println!("No data found for {:#?} and {:#?}", path, &*NAV_USER);
+                //println!("No data found for {:#?} and {:#?}", path, &*NAV_USER);
+                self.update = None
             };
         };
 
@@ -187,12 +188,19 @@ impl Track {
 struct Cli {
     #[arg(short, long)]
     config: Option<String>,
-    /*
-     * preview
-     * new only
-     * update all
-     * show overwrites
-     */
+
+    #[arg(short, long, value_enum)]
+    mode: Option<Mode>,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum Mode {
+    /// Show summary counts of the changes that will be made
+    Summary,
+    /// Show details about the changes that will be made
+    List,
+    /// Make updates in the Navidrome database
+    Update,
 }
 
 fn get_settings() -> Config {
@@ -209,25 +217,52 @@ fn get_settings() -> Config {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     println!("Getting ratings from {:?}", &*SOURCE_DB);
+    let cli = Cli::parse();
+
+    /* Treat the summary view as the default mode, if nothing was specified */
+    let mode = match cli.mode {
+        Some(m) => m,
+        None => Mode::Summary,
+    };
 
     let mut conn = SqliteConnection::connect(&*SOURCE_DB).await?;
 
-    let mut ratings: Vec<Track> = sqlx::query_as(include_str!("plex_source.sql"))
+    let mut tracks: Vec<Track> = sqlx::query_as(include_str!("plex_source.sql"))
         .bind(&*SOURCE_LIBRARY)
         .bind(&*SOURCE_USER)
         .fetch_all(&mut conn)
         .await
         .expect("Could not query Plex db");
-    println!("{:#?}", ratings.len());
+    println!("Found {:#?} tracks", tracks.len());
 
     conn.close().await?;
 
-    let r = 1;
+    println!("Checking Navidrome...");
+    for t in tracks.iter_mut() {
+        t.prepare_update().await?;
+    }
 
-    ratings[r].prepare_update().await?;
-    ratings[r].do_update().await?;
-
-    ratings[r].print();
+    match mode {
+        Mode::Summary => {
+            println!("Summary");
+            println!(
+                "{:#?} tracks can be updated",
+                tracks
+                    .into_iter()
+                    .filter(|t| t.status == Status::CanUpdate)
+                    .count()
+            );
+        }
+        Mode::List => {
+            println!("List mode");
+        }
+        Mode::Update => {
+            println!("Performing update...");
+            for t in tracks.iter_mut() {
+                t.do_update().await?;
+            }
+        }
+    }
 
     Ok(())
 }
