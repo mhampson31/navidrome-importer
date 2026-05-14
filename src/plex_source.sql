@@ -3,7 +3,10 @@ select artist.title as artist,
     track.title as track,
     track."index" as track_nbr,
     part.file as path,
-    settings.rating as rating,
+    /* Plex rating scale goes to 10; we need to scale to 5 *
+	 * We want to round up, but SQLX doesn't seem to recognize ceil().
+	 */
+    cast((settings.rating / 2) + 0.5 as int) as rating,
     count(views.id) as play_count,
     datetime(max(views.viewed_at), 'unixepoch') as play_date
 

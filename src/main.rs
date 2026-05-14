@@ -31,9 +31,8 @@ static NAV_USER: LazyLock<String> = LazyLock::new(|| {
 });
 
 #[derive(Clone, Debug, sqlx::FromRow)]
-struct NavidromeData {
+struct SourceData {
     path: String,
-    item_id: String,
     rating: i32,
     play_count: i32,
     play_date: String,
@@ -42,22 +41,24 @@ struct NavidromeData {
 #[derive(Debug, Clone)]
 struct Update {
     new_rating: i32,
+    new_rating_date: bool,
     new_play_count: i32,
     new_play_date: String,
 }
 
 #[derive(Debug, Default, sqlx::FromRow)]
 struct Track {
+    navidrome_id: String,
     artist: String,
     album: String,
     track: String,
     track_nbr: i32,
-    rating: f32,
+    rating: i32,
     play_count: i32,
     play_date: String,
-    path: Option<String>,
+    path: String,
     #[sqlx(skip)]
-    navidrome_data: Option<NavidromeData>,
+    source_data: Option<SourceData>,
     #[sqlx(skip)]
     update: Option<Update>,
     #[sqlx(skip)]
@@ -71,60 +72,47 @@ enum Status {
     NoChange,
     CanUpdate,
     Updated,
-    MissingNavData,
+    NoSourceData,
 }
 
 impl Track {
     async fn prepare_update(&mut self) -> anyhow::Result<()> {
-        if let Some(p) = &self.path {
-            let mut path = p.trim_start_matches(&*SOURCE_LIBRARY);
-            path = path.trim_start_matches("/");
-            let mut conn = SqliteConnection::connect(&*NAV_DB).await.unwrap();
+        if let Some(u) = &self.source_data {
+            /* take the higher rating */
+            let new_rating = max(u.rating, self.rating);
 
-            let nav_data: Option<NavidromeData> =
-                sqlx::query_as(include_str!("navidrome_source.sql"))
-                    .bind(&*NAV_USER)
-                    .bind(path)
-                    .fetch_optional(&mut conn)
-                    .await?;
+            /* add the source's play count to Navidrome's */
+            let new_play_count = &self.play_count + u.play_count;
 
-            self.navidrome_data = nav_data.clone();
+            /* compare both systems to determine most recent date played */
+            let new_play_date = max(u.play_date.clone(), self.play_date.clone());
 
-            if let Some(n) = nav_data {
-                let source_rating = (&self.rating / 2.0).round() as i32;
-
-                /* add the source's play count to Navidrome's */
-                let new_play_count = &self.play_count + n.play_count;
-
-                /* compare both systems to determine most recent date played */
-                let new_play_date = max(n.play_date.clone(), self.play_date.clone());
-
-                /* Has anything changed? If so, this track will need to be updated in Navidrome */
-                if source_rating > n.rating
-                    || new_play_count > n.play_count
-                    || new_play_date.clone() > n.play_date.clone()
-                {
-                    self.status = Status::CanUpdate;
-                } else {
-                    self.status = Status::NoChange;
-                }
-
-                let update: Update = Update {
+            /* Has anything changed? If so, this track will need to be updated in Navidrome */
+            if new_rating > self.rating
+                || new_play_count > u.play_count
+                || new_play_date.clone() > u.play_date.clone()
+            {
+                self.update = Some(Update {
                     /* todo: needs logic to handle conflicts */
-                    new_rating: source_rating,
+                    new_rating: new_rating,
+                    new_rating_date: if new_rating > self.rating {
+                        true
+                    } else {
+                        false
+                    },
                     new_play_count,
                     new_play_date,
-                };
-
-                self.update = Some(update.clone());
-
-                //println!("New data: {:#?}", update);
+                });
+                /* There's a change to make in Navidrome */
+                self.status = Status::CanUpdate;
             } else {
-                //println!("No data found for {:#?} and {:#?}", path, &*NAV_USER);
-                self.update = None
-            };
-        };
-
+                /* The source data has no new info */
+                self.status = Status::NoChange;
+            }
+        } else {
+            /* The source data does not have this track */
+            self.status = Status::NoSourceData
+        }
         Ok(())
     }
 
@@ -137,20 +125,14 @@ impl Track {
                     .update
                     .clone()
                     .ok_or(anyhow::anyhow!("Missing update data for track"))?;
-                let n = &self
-                    .navidrome_data
-                    .clone()
-                    .ok_or(anyhow::anyhow!("Missing Navidrome data for track"))?;
-
-                let new_rating_date = if u.new_rating > n.rating { true } else { false };
 
                 let rows_affected = sqlx::query(include_str!("navidrome_update.sql"))
                     .bind(&*NAV_USER)
-                    .bind(n.item_id.clone())
+                    .bind(&self.navidrome_id.clone())
                     .bind(u.new_play_count)
                     .bind(u.new_play_date.clone())
                     .bind(u.new_rating)
-                    .bind(new_rating_date)
+                    .bind(u.new_rating_date)
                     .execute(&mut conn)
                     .await?
                     .rows_affected();
@@ -159,27 +141,8 @@ impl Track {
 
                 Ok(rows_affected > 0)
             }
-            Status::MissingNavData => {
-                /* TODO: What do we do here? */
-                Ok(false)
-            }
             _ => Ok(false),
         }
-    }
-
-    fn print(&self) {
-        println!(
-            "{}, {}, {}, {}, {}, plays {}, date {:#?}, nav {:#?}, status {:#?}",
-            &self.artist,
-            &self.album,
-            &self.track,
-            &self.track_nbr,
-            &self.rating,
-            &self.play_count,
-            &self.play_date,
-            &self.navidrome_data,
-            &self.status
-        );
     }
 }
 
@@ -216,7 +179,6 @@ fn get_settings() -> Config {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    println!("Getting ratings from {:?}", &*SOURCE_DB);
     let cli = Cli::parse();
 
     /* Treat the summary view as the default mode, if nothing was specified */
@@ -225,21 +187,34 @@ async fn main() -> anyhow::Result<()> {
         None => Mode::Summary,
     };
 
-    let mut conn = SqliteConnection::connect(&*SOURCE_DB).await?;
+    println!("Getting current tracks from Navidrome");
 
-    let mut tracks: Vec<Track> = sqlx::query_as(include_str!("plex_source.sql"))
+    let mut nav_conn = SqliteConnection::connect(&*NAV_DB).await?;
+
+    let mut nav_data: Vec<Track> = sqlx::query_as(include_str!("navidrome_source.sql"))
+        .bind(&*NAV_USER)
+        .fetch_all(&mut nav_conn)
+        .await
+        .expect("Could not query Navidrome db");
+    println!("Found {:#?} tracks", nav_data.len());
+
+    nav_conn.close().await?;
+
+    println!("Checking import source...");
+
+    let mut conn = SqliteConnection::connect(&*SOURCE_DB).await.unwrap();
+
+    let source_data: Vec<SourceData> = sqlx::query_as(include_str!("plex_source.sql"))
         .bind(&*SOURCE_LIBRARY)
         .bind(&*SOURCE_USER)
         .fetch_all(&mut conn)
-        .await
-        .expect("Could not query Plex db");
-    println!("Found {:#?} tracks", tracks.len());
+        .await?;
+    println!("Found {:#?} tracks", source_data.len());
 
-    conn.close().await?;
-
-    println!("Checking Navidrome...");
-    for t in tracks.iter_mut() {
-        t.prepare_update().await?;
+    for n in nav_data.iter_mut() {
+        let path = format!("{}/{}", &*SOURCE_LIBRARY, n.path);
+        n.source_data = source_data.clone().into_iter().find(|d| d.path == path);
+        n.prepare_update().await?;
     }
 
     match mode {
@@ -247,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
             println!("Summary");
             println!(
                 "{:#?} tracks can be updated",
-                tracks
+                nav_data
                     .into_iter()
                     .filter(|t| t.status == Status::CanUpdate)
                     .count()
@@ -258,7 +233,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Mode::Update => {
             println!("Performing update...");
-            for t in tracks.iter_mut() {
+            for t in nav_data.iter_mut() {
                 t.do_update().await?;
             }
         }
