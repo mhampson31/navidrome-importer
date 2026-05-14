@@ -41,6 +41,7 @@ struct SourceData {
 #[derive(Debug, Clone)]
 struct Update {
     new_rating: i32,
+    new_rating_date: bool,
     new_play_count: i32,
     new_play_date: String,
 }
@@ -94,6 +95,11 @@ impl Track {
                 self.update = Some(Update {
                     /* todo: needs logic to handle conflicts */
                     new_rating: new_rating,
+                    new_rating_date: if new_rating > self.rating {
+                        true
+                    } else {
+                        false
+                    },
                     new_play_count,
                     new_play_date,
                 });
@@ -111,45 +117,32 @@ impl Track {
     }
 
     async fn do_update(&mut self) -> anyhow::Result<bool> {
-        /*
-          let mut conn = SqliteConnection::connect(&*NAV_DB).await?;
+        let mut conn = SqliteConnection::connect(&*NAV_DB).await?;
 
-          match &self.status {
-              Status::CanUpdate => {
-                  let u = &self
-                      .update
-                      .clone()
-                      .ok_or(anyhow::anyhow!("Missing update data for track"))?;
-                  let n = &self
-                      .source_data
-                      .clone()
-                      .ok_or(anyhow::anyhow!("Missing Navidrome data for track"))?;
+        match &self.status {
+            Status::CanUpdate => {
+                let u = &self
+                    .update
+                    .clone()
+                    .ok_or(anyhow::anyhow!("Missing update data for track"))?;
 
-                  let new_rating_date = if u.new_rating > n.rating { true } else { false };
+                let rows_affected = sqlx::query(include_str!("navidrome_update.sql"))
+                    .bind(&*NAV_USER)
+                    .bind(&self.navidrome_id.clone())
+                    .bind(u.new_play_count)
+                    .bind(u.new_play_date.clone())
+                    .bind(u.new_rating)
+                    .bind(u.new_rating_date)
+                    .execute(&mut conn)
+                    .await?
+                    .rows_affected();
 
-                  let rows_affected = sqlx::query(include_str!("navidrome_update.sql"))
-                      .bind(&*NAV_USER)
-                      .bind(n.item_id.clone())
-                      .bind(u.new_play_count)
-                      .bind(u.new_play_date.clone())
-                      .bind(u.new_rating)
-                      .bind(new_rating_date)
-                      .execute(&mut conn)
-                      .await?
-                      .rows_affected();
+                self.status = Status::Updated;
 
-                  self.status = Status::Updated;
-
-                  Ok(rows_affected > 0)
-              }
-              Status::MissingNavData => {
-                  /* TODO: What do we do here? */
-                  Ok(false)
-              }
-              _ => Ok(false),
-          }
-        */
-        Ok(true)
+                Ok(rows_affected > 0)
+            }
+            _ => Ok(false),
+        }
     }
 }
 
