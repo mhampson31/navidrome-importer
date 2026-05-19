@@ -1,7 +1,6 @@
 use anyhow;
 use clap::{Parser, ValueEnum};
 use config::Config;
-use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection};
 use std::{cmp::max, env, include_str, sync::LazyLock};
 

@@ -926,7 +926,6 @@ dependencies = [
  "chrono",
  "clap",
  "config",
- "serde",
  "sqlx",
  "tokio",
 ]
