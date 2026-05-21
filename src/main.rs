@@ -244,7 +244,7 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::{Acquire, migrate::Migrator};
+    use sqlx::migrate::Migrator;
     use std::path::Path;
 
     #[sqlx::test]
