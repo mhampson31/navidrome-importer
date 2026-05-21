@@ -247,14 +247,18 @@ mod tests {
     use sqlx::migrate::Migrator;
     use std::path::Path;
 
-    #[sqlx::test]
-    async fn query() -> Result<(), sqlx::Error> {
+    async fn create_nav_db() -> Result<SqliteConnection, sqlx::Error> {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await?;
         Migrator::new(Path::new("./nav-migrations"))
             .await?
             .run(&mut conn)
             .await?;
+        Ok(conn)
+    }
 
+    #[sqlx::test]
+    async fn track_count() -> Result<(), sqlx::Error> {
+        let mut conn = create_nav_db().await?;
         let user = "kiNuIyhPxNjUKmhxY9DXty";
         let nav_data: Vec<Track> = sqlx::query_as(include_str!("navidrome_source.sql"))
             .bind(&user)
@@ -262,7 +266,7 @@ mod tests {
             .await
             .expect("Could not query Navidrome db");
 
-        assert_eq!(2, nav_data.len());
+        assert_eq!(3, nav_data.len());
         Ok(())
     }
 }
