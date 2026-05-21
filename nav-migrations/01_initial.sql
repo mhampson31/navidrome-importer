@@ -6,7 +6,7 @@ create table if not exists media_file (
     title varchar(255) default '' not null,
     album varchar(255) default '' not null,
     artist varchar(255) default '' not null,
-    track_number integer default 0 not null,
+    track_number integer default 0 not null
 );
 
 create table if not exists annotation (
@@ -23,5 +23,5 @@ insert into media_file values
 ("HSSNWzhymYyyqDEmFkK8I9", "Band/Album/02 - Test Song 2.flac", "Test Song 2", "Album", "Band", 2);
 
 insert into annotation values
-("ddV5zjYx4IZJEj2QCaKX", "TkclRuUT3Ju381lf2Utlmd", "media_file", 3, "2026-04-23 02:02:39.804+00:00", 5),
-("", "TkclRuUT3Ju381lf2Utlmd", "media_file", 7, "2026-04-24 18:38:47.945+00:00", 0);
+("kiNuIyhPxNjUKmhxY9DXty", "TkclRuUT3Ju381lf2Utlmd", "media_file", 3, "2026-04-23 02:02:39.804+00:00", 5),
+("ddV5zjYx4IZJEj2QCaKXdw", "TkclRuUT3Ju381lf2Utlmd", "media_file", 7, "2026-04-24 18:38:47.945+00:00", 0);

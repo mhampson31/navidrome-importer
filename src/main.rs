@@ -244,14 +244,25 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::migrate::Migrator;
+    use sqlx::{Acquire, migrate::Migrator};
     use std::path::Path;
 
     #[sqlx::test]
-    fn query() -> Result<(), sqlx::Error> {
-        let conn = SqliteConnection::connect("sqlite::memory:").await?;
-        let nav_db = Migrator::new(Path::new("./nav-migrations")).await?;
-        assert_eq!(4, 4);
+    async fn query() -> Result<(), sqlx::Error> {
+        let mut conn = SqliteConnection::connect("sqlite::memory:").await?;
+        Migrator::new(Path::new("./nav-migrations"))
+            .await?
+            .run(&mut conn)
+            .await?;
+
+        let user = "kiNuIyhPxNjUKmhxY9DXty";
+        let nav_data: Vec<Track> = sqlx::query_as(include_str!("navidrome_source.sql"))
+            .bind(&user)
+            .fetch_all(&mut conn)
+            .await
+            .expect("Could not query Navidrome db");
+
+        assert_eq!(2, nav_data.len());
         Ok(())
     }
 }
