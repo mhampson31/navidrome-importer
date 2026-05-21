@@ -240,3 +240,18 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::migrate::Migrator;
+    use std::path::Path;
+
+    #[sqlx::test]
+    fn query() -> Result<(), sqlx::Error> {
+        let conn = SqliteConnection::connect("sqlite::memory:").await?;
+        let nav_db = Migrator::new(Path::new("./nav-migrations")).await?;
+        assert_eq!(4, 4);
+        Ok(())
+    }
+}
