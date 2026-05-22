@@ -45,6 +45,26 @@ struct Update {
     new_play_date: String,
 }
 
+#[derive(Debug, Default, PartialEq)]
+enum Status {
+    #[default]
+    NotChecked,
+    NoChange,
+    CanUpdate,
+    Updated,
+    NoSourceData,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum Mode {
+    /// Show summary counts of the changes that will be made
+    Summary,
+    /// Show details about the changes that will be made
+    List,
+    /// Make updates in the Navidrome database
+    Update,
+}
+
 #[derive(Debug, Default, sqlx::FromRow)]
 struct Track {
     navidrome_id: String,
@@ -62,16 +82,6 @@ struct Track {
     update: Option<Update>,
     #[sqlx(skip)]
     status: Status,
-}
-
-#[derive(Debug, Default, PartialEq)]
-enum Status {
-    #[default]
-    NotChecked,
-    NoChange,
-    CanUpdate,
-    Updated,
-    NoSourceData,
 }
 
 impl Track {
@@ -115,7 +125,7 @@ impl Track {
         Ok(())
     }
 
-    async fn do_update(&mut self) -> anyhow::Result<bool> {
+    async fn update(&mut self) -> anyhow::Result<bool> {
         let mut conn = SqliteConnection::connect(&*NAV_DB).await?;
 
         match &self.status {
@@ -145,6 +155,32 @@ impl Track {
     }
 }
 
+struct Collection {
+    tracks: Vec<Track>,
+}
+
+impl Collection {
+    async fn new() -> Collection {
+        println!("Getting current tracks from Navidrome");
+
+        let mut nav_conn = SqliteConnection::connect(&*NAV_DB)
+            .await
+            .expect("Could not connect to the Navidrome database");
+
+        Collection {
+            tracks: sqlx::query_as(include_str!("navidrome_source.sql"))
+                .bind(&*NAV_USER)
+                .fetch_all(&mut nav_conn)
+                .await
+                .expect("Could not query the Navidrome database"),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.tracks.len()
+    }
+}
+
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
@@ -153,16 +189,6 @@ struct Cli {
 
     #[arg(short, long, value_enum)]
     mode: Option<Mode>,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum Mode {
-    /// Show summary counts of the changes that will be made
-    Summary,
-    /// Show details about the changes that will be made
-    List,
-    /// Make updates in the Navidrome database
-    Update,
 }
 
 fn get_settings() -> Config {
@@ -186,18 +212,8 @@ async fn main() -> anyhow::Result<()> {
         None => Mode::Summary,
     };
 
-    println!("Getting current tracks from Navidrome");
-
-    let mut nav_conn = SqliteConnection::connect(&*NAV_DB).await?;
-
-    let mut nav_data: Vec<Track> = sqlx::query_as(include_str!("navidrome_source.sql"))
-        .bind(&*NAV_USER)
-        .fetch_all(&mut nav_conn)
-        .await
-        .expect("Could not query Navidrome db");
+    let mut nav_data = Collection::new().await;
     println!("Found {:#?} tracks", nav_data.len());
-
-    nav_conn.close().await?;
 
     println!("Checking import source...");
 
@@ -210,7 +226,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("Found {:#?} tracks", source_data.len());
 
-    for n in nav_data.iter_mut() {
+    for n in nav_data.tracks.iter_mut() {
         let path = format!("{}/{}", &*SOURCE_LIBRARY, n.path);
         n.source_data = source_data.clone().into_iter().find(|d| d.path == path);
         n.prepare_update().await?;
@@ -222,6 +238,7 @@ async fn main() -> anyhow::Result<()> {
             println!(
                 "{:#?} tracks can be updated",
                 nav_data
+                    .tracks
                     .into_iter()
                     .filter(|t| t.status == Status::CanUpdate)
                     .count()
@@ -232,8 +249,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Mode::Update => {
             println!("Performing update...");
-            for t in nav_data.iter_mut() {
-                t.do_update().await?;
+            for t in nav_data.tracks.iter_mut() {
+                t.update().await?;
             }
         }
     }
