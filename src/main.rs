@@ -160,17 +160,13 @@ struct Collection {
 }
 
 impl Collection {
-    async fn new() -> Collection {
+    async fn new(mut conn: SqliteConnection, user: &String) -> Collection {
         println!("Getting current tracks from Navidrome");
-
-        let mut nav_conn = SqliteConnection::connect(&*NAV_DB)
-            .await
-            .expect("Could not connect to the Navidrome database");
 
         Collection {
             tracks: sqlx::query_as(include_str!("navidrome_source.sql"))
-                .bind(&*NAV_USER)
-                .fetch_all(&mut nav_conn)
+                .bind(user)
+                .fetch_all(&mut conn)
                 .await
                 .expect("Could not query the Navidrome database"),
         }
@@ -212,7 +208,11 @@ async fn main() -> anyhow::Result<()> {
         None => Mode::Summary,
     };
 
-    let mut nav_data = Collection::new().await;
+    let nav_conn = SqliteConnection::connect(&*NAV_DB)
+        .await
+        .expect("Could not connect to the Navidrome database");
+
+    let mut nav_data = Collection::new(nav_conn, &*NAV_USER).await;
     println!("Found {:#?} tracks", nav_data.len());
 
     println!("Checking import source...");
@@ -273,10 +273,25 @@ mod tests {
         Ok(conn)
     }
 
+    fn get_nav_user() -> String {
+        String::from("kiNuIyhPxNjUKmhxY9DXty")
+    }
+
+    #[sqlx::test]
+    async fn create_collection() -> Result<(), sqlx::Error> {
+        let conn = create_nav_db().await?;
+        let user = get_nav_user();
+
+        let collection = Collection::new(conn, &user).await;
+        assert_eq!(3, collection.len());
+
+        Ok(())
+    }
+
     #[sqlx::test]
     async fn track_count() -> Result<(), sqlx::Error> {
         let mut conn = create_nav_db().await?;
-        let user = "kiNuIyhPxNjUKmhxY9DXty";
+        let user = get_nav_user();
         let nav_data: Vec<Track> = sqlx::query_as(include_str!("navidrome_source.sql"))
             .bind(&user)
             .fetch_all(&mut conn)
