@@ -172,6 +172,15 @@ impl Collection {
         }
     }
 
+    async fn prepare(&mut self, source_data: Vec<SourceData>) -> anyhow::Result<()> {
+        for n in self.tracks.iter_mut() {
+            let path = format!("{}/{}", &*SOURCE_LIBRARY, n.path);
+            n.source_data = source_data.clone().into_iter().find(|d| d.path == path);
+            n.prepare_update().await?;
+        }
+        Ok(())
+    }
+
     fn len(&self) -> usize {
         self.tracks.len()
     }
@@ -226,11 +235,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("Found {:#?} tracks", source_data.len());
 
-    for n in nav_data.tracks.iter_mut() {
-        let path = format!("{}/{}", &*SOURCE_LIBRARY, n.path);
-        n.source_data = source_data.clone().into_iter().find(|d| d.path == path);
-        n.prepare_update().await?;
-    }
+    nav_data.prepare(source_data).await?;
 
     match mode {
         Mode::Summary => {
@@ -273,8 +278,23 @@ mod tests {
         Ok(conn)
     }
 
+    async fn create_plex_db() -> Result<SqliteConnection, sqlx::Error> {
+        println!("connect");
+        let mut conn = SqliteConnection::connect("sqlite::memory:").await?;
+        println!("migrate");
+        Migrator::new(Path::new("./plex-migrations"))
+            .await?
+            .run(&mut conn)
+            .await?;
+        Ok(conn)
+    }
+
     fn get_nav_user() -> String {
         String::from("kiNuIyhPxNjUKmhxY9DXty")
+    }
+
+    fn get_plex_user() -> String {
+        String::from("test1")
     }
 
     #[sqlx::test]
@@ -299,6 +319,45 @@ mod tests {
             .expect("Could not query Navidrome db");
 
         assert_eq!(3, nav_data.len());
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn plex_count() -> Result<(), sqlx::Error> {
+        let mut plex_conn = create_plex_db().await?;
+        println!("plex db");
+        let plex_user = get_plex_user();
+
+        let plex_data: Vec<SourceData> = sqlx::query_as(include_str!("plex_source.sql"))
+            .bind("/music")
+            .bind(plex_user)
+            .fetch_all(&mut plex_conn)
+            .await?;
+
+        assert_eq!(2, plex_data.len());
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn prepare_update() -> Result<(), anyhow::Error> {
+        let nav_conn = create_nav_db().await?;
+        let nav_user = get_nav_user();
+
+        let mut collection = Collection::new(nav_conn, &nav_user).await;
+
+        let mut plex_conn = create_plex_db().await?;
+        let plex_user = get_plex_user();
+
+        let plex_data: Vec<SourceData> = sqlx::query_as(include_str!("plex_source.sql"))
+            .bind("/music")
+            .bind(plex_user)
+            .fetch_all(&mut plex_conn)
+            .await?;
+
+        collection.prepare(plex_data).await?;
+
+        assert_eq!(collection.tracks[1].status, Status::CanUpdate);
         Ok(())
     }
 }
