@@ -59,7 +59,8 @@ insert into metadata_item_settings values
     ("com.plexapp.agents.none://ede0bf8c-daca-404e-abdf-2203d9ba679d", "1", NULL),
     ("plex://track/61cb8c9f9640ca9b704e4537", "1", "10.0"), -- test track 1
     ("plex://track/61cb8c9f9640ca9b704e4542", "1", "5.0"), -- test track 2
-    ("plex://track/61cb8c9f9640ca9b704e4537", "2", "2.0"), -- test track 1, different user
+    ("plex://track/61cb8c9f9640ca9b704e4537", "2", "2.0"), -- test track 1, different user,
+    ("plex://track/613adbfc22a23450583e7b7a", "1", "6.0"), -- test track 3
     ("plex://album/5d1a9afaf0b09c68c12c70df", "1", NULL)
 ;
 
@@ -83,7 +84,7 @@ insert into metadata_item_views values
 insert into media_items values
     ("1", "365"),
     ("2", "366"),
-    ("3", "367")
+    ("3", "368")
 ;
 
 insert into media_parts values

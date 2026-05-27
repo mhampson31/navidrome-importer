@@ -37,8 +37,8 @@ struct SourceData {
     play_date: String,
 }
 
-#[derive(Debug, Clone)]
-struct Update {
+#[derive(Debug, Clone, PartialEq)]
+struct UpdateDetail {
     new_rating: i32,
     new_rating_date: bool,
     new_play_count: i32,
@@ -79,7 +79,7 @@ struct Track {
     #[sqlx(skip)]
     source_data: Option<SourceData>,
     #[sqlx(skip)]
-    update: Option<Update>,
+    update: Option<UpdateDetail>,
     #[sqlx(skip)]
     status: Status,
 }
@@ -101,7 +101,7 @@ impl Track {
                 || new_play_count > u.play_count
                 || new_play_date.clone() > u.play_date.clone()
             {
-                self.update = Some(Update {
+                self.update = Some(UpdateDetail {
                     /* todo: needs logic to handle conflicts */
                     new_rating: new_rating,
                     new_rating_date: if new_rating > self.rating {
@@ -181,6 +181,13 @@ impl Collection {
         Ok(())
     }
 
+    async fn update(&mut self) -> anyhow::Result<()> {
+        for t in self.tracks.iter_mut() {
+            t.update().await?;
+        }
+        Ok(())
+    }
+
     fn len(&self) -> usize {
         self.tracks.len()
     }
@@ -254,9 +261,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Mode::Update => {
             println!("Performing update...");
-            for t in nav_data.tracks.iter_mut() {
-                t.update().await?;
-            }
+            nav_data.update().await?
         }
     }
 
@@ -265,6 +270,8 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::Mode::Update;
+
     use super::*;
     use sqlx::migrate::Migrator;
     use std::path::Path;
@@ -334,7 +341,7 @@ mod tests {
             .fetch_all(&mut plex_conn)
             .await?;
 
-        assert_eq!(2, plex_data.len());
+        assert_eq!(3, plex_data.len());
 
         Ok(())
     }
@@ -357,7 +364,54 @@ mod tests {
 
         collection.prepare(plex_data).await?;
 
-        assert_eq!(collection.tracks[1].status, Status::CanUpdate);
+        assert_eq!(
+            collection.tracks[0].update,
+            Some(UpdateDetail {
+                new_rating: 5,
+                new_rating_date: false,
+                new_play_count: 7,
+                new_play_date: String::from("2026-04-23 02:02:39.804+00:00"),
+            })
+        );
+
+        /*
+            test user has three tracks by Band in Nav:
+                Album:
+                    1. Test Song - played 3 times, last played 4/23/2026, rated 5
+                        has one annotation of "fake_type" that shouldn't count
+                        has one annotation from a different user, shouldn't count
+                    2. Test Song 2 - played 27 times, last play 1/13/2026, rated 10
+                New Album:
+                    1. New Test Song - never listed
+
+            Tests:
+                1. Test Song gets a new rating, +views, new date
+                2. Test Song 2 has the same rating, +views, no new date
+                3. New Test Song gets a new annotation record
+        */
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn do_update() -> Result<(), anyhow::Error> {
+        let nav_conn = create_nav_db().await?;
+        let nav_user = get_nav_user();
+
+        let mut collection = Collection::new(nav_conn, &nav_user).await;
+
+        let mut plex_conn = create_plex_db().await?;
+        let plex_user = get_plex_user();
+
+        let plex_data: Vec<SourceData> = sqlx::query_as(include_str!("plex_source.sql"))
+            .bind("/music")
+            .bind(plex_user)
+            .fetch_all(&mut plex_conn)
+            .await?;
+
+        collection.prepare(plex_data).await?;
+
+        collection.update().await?;
         Ok(())
     }
 }

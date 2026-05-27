@@ -27,4 +27,16 @@ insert into media_file values
 insert into annotation values
 ("kiNuIyhPxNjUKmhxY9DXty", "TkclRuUT3Ju381lf2Utlmd", "media_file", 3, "2026-04-23 02:02:39.804+00:00", 5),
 ("kiNuIyhPxNjUKmhxY9DXty", "TkclRuUT3Ju381lf2Utlmd", "fake_type", 2, "2026-04-27 02:04:32.804+00:00", 2),
+("kiNuIyhPxNjUKmhxY9DXty", "HSSNWzhymYyyqDEmFkK8I9", "media_file", 27, "2026-01-13 02:02:39.804+00:00", 10),
 ("ddV5zjYx4IZJEj2QCaKXdw", "TkclRuUT3Ju381lf2Utlmd", "media_file", 7, "2026-04-24 18:38:47.945+00:00", 0);
+
+/*
+    test user has three tracks by Band:
+        Album:
+            1. Test Song - played 3 times, last played 4/23/2026, rated 5
+                has one annotation of "fake_type" that shouldn't count
+                has one annotation from a different user, shouldn't count
+            2. Test Song 2 - played 27 times, last play 1/13/2026, rated 10
+        New Album:
+            1. New Test Song - never listed
+*/
