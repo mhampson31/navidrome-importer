@@ -29,7 +29,7 @@ static NAV_USER: LazyLock<String> = LazyLock::new(|| {
     settings.get::<String>("navidrome_user").unwrap()
 });
 
-#[derive(Clone, Debug, sqlx::FromRow)]
+#[derive(Clone, Debug, PartialEq, sqlx::FromRow)]
 struct SourceData {
     path: String,
     rating: i32,
@@ -65,7 +65,7 @@ enum Mode {
     Update,
 }
 
-#[derive(Debug, Default, sqlx::FromRow)]
+#[derive(Debug, Default, PartialEq, sqlx::FromRow)]
 struct Track {
     navidrome_id: String,
     artist: String,
@@ -270,8 +270,6 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::Mode::Update;
-
     use super::*;
     use sqlx::migrate::Migrator;
     use std::path::Path;
@@ -412,6 +410,26 @@ mod tests {
         collection.prepare(plex_data).await?;
 
         collection.update().await?;
+
+        /* query the test db for the new data */
+        let updated_collection = Collection::new(create_nav_db().await?, &nav_user).await;
+
+        let t = Track {
+            navidrome_id: String::from("TkclRuUT3Ju381lf2Utlmd"),
+            artist: String::from("Band"),
+            album: String::from("Album"),
+            track: String::from("Test Song"),
+            track_nbr: 1,
+            rating: 5,
+            play_count: 3,
+            play_date: String::from("2026-04-23 02:02:39.804+00:00"),
+            path: String::from("Band/Album/01 - Test Song.flac"),
+            source_data: None,
+            update: None,
+            status: Status::NotChecked,
+        };
+        assert_eq!(t, updated_collection.tracks[0]);
+
         Ok(())
     }
 }
